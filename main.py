@@ -12,9 +12,9 @@ import gdown
 import os
 
 # === إعداد Google Drive ===
-file_id = '1KuyUxg4F8-P0lPzNiwOysVfmpS2vQuAs'  # ضع هنا ID الخاص بملفك
+file_id = '1Asnxs5veFwsLcAnmquHgFbRukfC5DGTD'  # ضع هنا ID الخاص بملفك
 url = f"https://drive.google.com/uc?id={file_id}"
-local_filename = "recipes_with_prices1.csv.gz"
+local_filename = "recipes_with_prices2.csv.gz"
 
 # تحميل الملف لو مش موجود
 if not os.path.exists(local_filename):
@@ -154,9 +154,9 @@ def suggest_recipes(total_calories, meal_type, daily_budget, dietary_restriction
                     ~fallback['Keywords'].astype(str).str.lower().str.contains(pattern, na=False)
                 ]
         
-        return fallback.sort_values(by='CalorieDiff').head(top_n)[['Name', 'MealType', 'Calories', 'EstimatedPriceEGP', 'RecipeIngredientParts']]
+        return fallback.sort_values(by='CalorieDiff').head(top_n)[['Name', 'MealType', 'Calories', 'EstimatedPriceEGP', 'RecipeIngredientParts','RecipeIngredientQuantities']]
 
-    return similar_recipes[['Name', 'MealType', 'Calories', 'EstimatedPriceEGP', 'RecipeIngredientParts']].head(top_n)
+    return similar_recipes[['Name', 'MealType', 'Calories', 'EstimatedPriceEGP', 'RecipeIngredientParts','RecipeIngredientQuantities']].head(top_n)
 
 def suggest_full_day_meal_plan(total_calories, daily_budget, dietary_restrictions=None, top_n=5):
     meal_types = ['breakfast', 'snack', 'lunch', 'dinner']
@@ -179,7 +179,8 @@ def suggest_full_day_meal_plan(total_calories, daily_budget, dietary_restriction
                 'MealType': meal,
                 'Calories': None,
                 'EstimatedPriceEGP': None,
-                'RecipeIngredientParts': None
+                'RecipeIngredientParts': None,
+                'RecipeIngredientQuantities':None
             }])
     
     return plan
