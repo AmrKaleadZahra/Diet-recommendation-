@@ -8,22 +8,24 @@ import joblib
 import tensorflow as tf
 from tensorflow.keras.losses import MeanSquaredError
 from fastapi.middleware.cors import CORSMiddleware
+import gdown
+import os
 
-#
+# === إعداد Google Drive ===
+file_id = '1w5Jmvh6drQpidMzY9D18WCvJE1BCDJ4d'  # ضع هنا ID الخاص بملفك
+url = f"https://drive.google.com/uc?id={file_id}"
+local_filename = "recipes_with_prices.csv.gz"
 
-
-# قراءة الملف المضغوط CSV.GZ
-gz_file = 'recipes_with_prices.csv.gz'
-df = pd.read_csv(gz_file, compression='gzip')
 # تحميل الملف لو مش موجود
-
-
+if not os.path.exists(local_filename):
+    gdown.download(url, local_filename, quiet=False)
+#
 # === Load model and data ===
 model = tf.keras.models.load_model(
     "diet_model00.keras",
     compile=False
 )
-recipes_df = pd.read_csv(gz_file, compression='gzip')
+recipes_df = pd.read_csv(local_filename, compression='gzip')
 
 nutrition_columns = [
     'Calories', 'FatContent', 'SaturatedFatContent', 'CholesterolContent',
