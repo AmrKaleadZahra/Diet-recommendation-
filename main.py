@@ -12,9 +12,9 @@ import gdown
 import os
 
 # === إعداد Google Drive ===
-file_id = '1w5Jmvh6drQpidMzY9D18WCvJE1BCDJ4d'  # ضع هنا ID الخاص بملفك
+file_id = '1KuyUxg4F8-P0lPzNiwOysVfmpS2vQuAs'  # ضع هنا ID الخاص بملفك
 url = f"https://drive.google.com/uc?id={file_id}"
-local_filename = "recipes_with_prices.csv.gz"
+local_filename = "recipes_with_prices1.csv.gz"
 
 # تحميل الملف لو مش موجود
 if not os.path.exists(local_filename):
