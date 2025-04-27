@@ -1,3 +1,4 @@
+import time
 from fastapi import FastAPI
 from pydantic import BaseModel
 import pandas as pd
@@ -6,38 +7,28 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics.pairwise import cosine_similarity
 import joblib
 import tensorflow as tf
-from tensorflow.keras.losses import MeanSquaredError
 from fastapi.middleware.cors import CORSMiddleware
 import gdown
 import os
 
-
 # === إعداد Google Drive ===
-file_id = '1WW1XU9TTXE8BWb0Nr1IcfyMOqUlzuj5B'  # ضع هنا ID الخاص بملفك
+file_id = '1WW1XU9TTXE8BWb0Nr1IcfyMOqUlzuj5B'
 url = f"https://drive.google.com/uc?id={file_id}"
 local_filename = "recipes_with_prices5.csv"
 
-# تحميل الملف لو مش موجود
 if not os.path.exists(local_filename):
     gdown.download(url, local_filename, quiet=False)
 
-# === Load model and data ===
-model = tf.keras.models.load_model(
-    "diet_model00.keras",
-    compile=False
-)
-recipes_df = pd.read_csv(local_filename)
+# === تحميل الموديل والسكيلر ===
+model = tf.keras.models.load_model("diet_model00.keras", compile=False)
+scaler = joblib.load("scaler3.pkl")
 
 nutrition_columns = [
     'Calories', 'FatContent', 'SaturatedFatContent', 'CholesterolContent',
     'SodiumContent', 'CarbohydrateContent', 'FiberContent', 'SugarContent', 'ProteinContent'
 ]
 
-scaler = joblib.load("scaler3.pkl")  # تحميل الـScaler المستخدم بالتدريب
-scaled_data = scaler.transform(recipes_df[nutrition_columns])
-encoded_recipes = model.predict(scaled_data)
-
-# === FastAPI app ===
+# === FastAPI App ===
 app = FastAPI()
 
 app.add_middleware(
@@ -48,7 +39,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === Request model ===
 class UserInput(BaseModel):
     gender: str
     weight: float
@@ -59,42 +49,69 @@ class UserInput(BaseModel):
     daily_budget: float
     dietary_restrictions: list[str]
 
-# === Functions for BMR and Calories ===
+# === الكاش مع توقيت التخزين
+meal_cache = {}
+CACHE_EXPIRATION_SECONDS = 300  # 5 دقائق
+
+def set_cache(key, value):
+    meal_cache[key] = {
+        'timestamp': time.time(),
+        'value': value
+    }
+
+def get_cache(key):
+    item = meal_cache.get(key)
+    if not item:
+        return None
+    # تحقق من مدة الصلاحية
+    if time.time() - item['timestamp'] > CACHE_EXPIRATION_SECONDS:
+        del meal_cache[key]
+        return None
+    return item['value']
+
+# === حسابات السعرات
 def compute_bmr(gender, body_weight, body_height, age):
     if gender == 'male':
-        bmr_value = 10 * body_weight + 6.25 * body_height - 5 * age + 5
+        return 10 * body_weight + 6.25 * body_height - 5 * age + 5
     elif gender == 'female':
-        bmr_value = 10 * body_weight + 6.25 * body_height - 5 * age - 161
+        return 10 * body_weight + 6.25 * body_height - 5 * age - 161
     else:
-        raise ValueError("Invalid gender. Please choose 'male' or 'female'.")
-    return bmr_value
+        raise ValueError("Invalid gender.")
 
 def compute_daily_caloric_intake(bmr, activity_intensity, objective):
     intensity_multipliers = {
-        'sedentary': 1.2,
-        'lightly_active': 1.375,
-        'moderately_active': 1.55,
-        'very_active': 1.725,
-        'extra_active': 1.9
+        'sedentary': 1.2, 'lightly_active': 1.375,
+        'moderately_active': 1.55, 'very_active': 1.725, 'extra_active': 1.9
     }
     objective_adjustments = {
-        'weight_loss': 0.8,
-        'muscle_gain': 1.2,
-        'health_maintenance': 1
+        'weight_loss': 0.8, 'muscle_gain': 1.2, 'health_maintenance': 1
     }
+    return round(bmr * intensity_multipliers[activity_intensity] * objective_adjustments[objective])
 
-    if activity_intensity not in intensity_multipliers:
-        raise ValueError(f"Invalid activity_level: {activity_intensity}")
-    if objective not in objective_adjustments:
-        raise ValueError(f"Invalid goal: {objective}")
+# === تحميل بيانات على الطلب
+def load_recipes_batch(meal_type=None):
+    df = pd.read_csv(local_filename, usecols=[
+        'Name', 'MealType', 'Calories', 'EstimatedPriceEGP', 'RecipeIngredientParts'
+    ] + nutrition_columns)
 
-    maintenance_calories = bmr * intensity_multipliers[activity_intensity]
-    total_caloric_intake = maintenance_calories * objective_adjustments[objective]
+    if meal_type:
+        df = df[df['MealType'].str.lower() == meal_type.lower()]
+    return df
 
-    return round(total_caloric_intake)
-
-# === Functions for Recipe Suggestions ===
 def suggest_recipes(total_calories, meal_type, daily_budget, dietary_restrictions, top_n=5):
+    cache_key = f"{meal_type}_{total_calories}_{daily_budget}_{'_'.join(dietary_restrictions)}"
+    cached = get_cache(cache_key)
+    if cached is not None:
+        return cached
+
+    recipes_df = load_recipes_batch(meal_type)
+    if recipes_df.empty:
+        return pd.DataFrame()
+
+    input_features = recipes_df[nutrition_columns]
+    scaled_data = scaler.transform(input_features)
+    encoded_recipes = model.predict(scaled_data)
+
     meal_split = {
         'breakfast': (0.20, 0.20),
         'snack':     (0.15, 0.15),
@@ -105,7 +122,7 @@ def suggest_recipes(total_calories, meal_type, daily_budget, dietary_restriction
     target_calories = total_calories * cal_ratio
     target_budget = daily_budget * budget_ratio
 
-    user_input_features = np.array([[target_calories, 0, 0, 0, 0, 0, 0, 0, 0]])
+    user_input_features = np.array([[target_calories] + [0]*8])
     scaled_input_features = scaler.transform(user_input_features)
     predicted_latent_features = model.predict(scaled_input_features)
 
@@ -113,51 +130,20 @@ def suggest_recipes(total_calories, meal_type, daily_budget, dietary_restriction
     top_indices = np.argsort(similarities)[::-1][:top_n]
     similar_recipes = recipes_df.iloc[top_indices].copy()
 
-    if 'MealType' in similar_recipes.columns:
-        similar_recipes = similar_recipes[similar_recipes['MealType'].str.lower() == meal_type.lower()]
-
     similar_recipes = similar_recipes[
         (similar_recipes['EstimatedPriceEGP'] <= target_budget) &
         (similar_recipes['Calories'] <= target_calories)
     ]
 
-    similar_recipes = similar_recipes.sort_values(by=['EstimatedPriceEGP', 'Calories'], ascending=[False, False])
-
     if dietary_restrictions:
         pattern = '|'.join([r.lower() for r in dietary_restrictions])
-        similar_recipes = similar_recipes[
-            ~similar_recipes['Name'].str.lower().str.contains(pattern, na=False)
-        ]
-        if 'RecipeIngredientParts' in similar_recipes.columns:
-            similar_recipes = similar_recipes[
-                ~similar_recipes['RecipeIngredientParts'].str.lower().str.contains(pattern, na=False)
-            ]
-        if 'Keywords' in similar_recipes.columns:
-            similar_recipes = similar_recipes[
-                ~similar_recipes['Keywords'].str.lower().str.contains(pattern, na=False)
-            ]
+        similar_recipes = similar_recipes[~similar_recipes['Name'].str.lower().str.contains(pattern, na=False)]
 
-    if similar_recipes.empty:
-        fallback = recipes_df.copy()
-        fallback = fallback[fallback['MealType'].str.lower() == meal_type.lower()]
-        fallback = fallback[fallback['EstimatedPriceEGP'] <= target_budget]
-        fallback['CalorieDiff'] = np.abs(fallback['Calories'] - target_calories)
+    result = similar_recipes[['Name', 'MealType', 'Calories', 'EstimatedPriceEGP', 'RecipeIngredientParts']].head(top_n)
 
-        if dietary_restrictions:
-            pattern = '|'.join([r.lower() for r in dietary_restrictions])
-            fallback = fallback[~fallback['Name'].str.lower().str.contains(pattern, na=False)]
-            if 'RecipeIngredientParts' in fallback.columns:
-                fallback = fallback[
-                    ~fallback['RecipeIngredientParts'].astype(str).str.lower().str.contains(pattern, na=False)
-                ]
-            if 'Keywords' in fallback.columns:
-                fallback = fallback[
-                    ~fallback['Keywords'].astype(str).str.lower().str.contains(pattern, na=False)
-                ]
-        
-        return fallback.sort_values(by='CalorieDiff').head(top_n)[['Name', 'MealType', 'Calories', 'EstimatedPriceEGP', 'RecipeIngredientParts']]
-
-    return similar_recipes[['Name', 'MealType', 'Calories', 'EstimatedPriceEGP', 'RecipeIngredientParts']].head(top_n)
+    # تخزين النتيجة في الكاش مع توقيت
+    set_cache(cache_key, result)
+    return result
 
 def suggest_full_day_meal_plan(total_calories, daily_budget, dietary_restrictions=None, top_n=5):
     meal_types = ['breakfast', 'snack', 'lunch', 'dinner']
@@ -182,10 +168,10 @@ def suggest_full_day_meal_plan(total_calories, daily_budget, dietary_restriction
                 'EstimatedPriceEGP': None,
                 'RecipeIngredientParts': None
             }])
-    
+
     return plan
 
-# === FastAPI Route ===
+# === FastAPI Route
 @app.post("/personalized_recommend")
 def personalized_recommendation(user: UserInput):
     bmr = compute_bmr(user.gender, user.weight, user.height, user.age)
