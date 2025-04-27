@@ -12,17 +12,29 @@ import gdown
 import os
 
 # === إعداد Google Drive ===
-file_id = '1WW1XU9TTXE8BWb0Nr1IcfyMOqUlzuj5B'  # ضع هنا ID الخاص بملفك
+file_id = '1qkzjYkIusPwur9U4WLKvPz2rFUq4fLA7'  # ضع هنا ID الخاص بملفك
 url = f"https://drive.google.com/uc?id={file_id}"
-local_filename = "recipes_with_prices5.csv"
+local_filename = "recipes_with_prices.csv"
 
 # تحميل الملف لو مش موجود
 if not os.path.exists(local_filename):
     gdown.download(url, local_filename, quiet=False)
 
-# === Load model and scaler ONCE when server starts ===
-model = tf.keras.models.load_model("diet_model00.keras", compile=False)
+# === Load model and data ===
+model = tf.keras.models.load_model(
+    "diet_model00.keras",
+    compile=False
+)
+recipes_df = pd.read_csv(local_filename)
+
+nutrition_columns = [
+    'Calories', 'FatContent', 'SaturatedFatContent', 'CholesterolContent',
+    'SodiumContent', 'CarbohydrateContent', 'FiberContent', 'SugarContent', 'ProteinContent'
+]
+
 scaler = joblib.load("scaler3.pkl")  # تحميل الـScaler المستخدم بالتدريب
+scaled_data = scaler.transform(recipes_df[nutrition_columns])
+encoded_recipes = model.predict(scaled_data)
 
 # === FastAPI app ===
 app = FastAPI()
@@ -92,16 +104,6 @@ def suggest_recipes(total_calories, meal_type, daily_budget, dietary_restriction
     target_calories = total_calories * cal_ratio
     target_budget = daily_budget * budget_ratio
 
-    # === Read the dataset when needed ===
-    recipes_df = pd.read_csv(local_filename)
-    nutrition_columns = [
-        'Calories', 'FatContent', 'SaturatedFatContent', 'CholesterolContent',
-        'SodiumContent', 'CarbohydrateContent', 'FiberContent', 'SugarContent', 'ProteinContent'
-    ]
-
-    scaled_data = scaler.transform(recipes_df[nutrition_columns])
-    encoded_recipes = model.predict(scaled_data)
-
     user_input_features = np.array([[target_calories, 0, 0, 0, 0, 0, 0, 0, 0]])
     scaled_input_features = scaler.transform(user_input_features)
     predicted_latent_features = model.predict(scaled_input_features)
@@ -114,7 +116,7 @@ def suggest_recipes(total_calories, meal_type, daily_budget, dietary_restriction
         similar_recipes = similar_recipes[similar_recipes['MealType'].str.lower() == meal_type.lower()]
 
     similar_recipes = similar_recipes[
-        (similar_recipes['EstimatedPriceEGP'] <= target_budget) & 
+        (similar_recipes['EstimatedPriceEGP'] <= target_budget) &
         (similar_recipes['Calories'] <= target_calories)
     ]
 
