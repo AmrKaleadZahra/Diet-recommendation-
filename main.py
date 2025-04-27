@@ -25,7 +25,9 @@ model = tf.keras.models.load_model(
     "diet_model00.keras",
     compile=False
 )
-recipes_df = pd.read_csv(local_filename,compression='gzip')
+selected_columns = ['Calories','Keywords','Name','MealType','EstimatedPriceEGP','FatContent', 'SaturatedFatContent', 'CholesterolContent',
+    'SodiumContent', 'CarbohydrateContent', 'FiberContent', 'SugarContent', 'ProteinContent','RecipeIngredientQuantities','RecipeIngredientParts']
+recipes_df = pd.read_csv(local_filename,usecols=selected_columns,compression='gzip')
 
 nutrition_columns = [
     'Calories', 'FatContent', 'SaturatedFatContent', 'CholesterolContent',
