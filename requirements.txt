@@ -2,7 +2,6 @@ fastapi
 uvicorn
 pandas
 numpy
-tensorflow
 scikit-learn
+tensorflow
 joblib
-gdown

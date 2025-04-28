@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
 import pandas as pd
 import numpy as np
@@ -7,51 +7,50 @@ from sklearn.metrics.pairwise import cosine_similarity
 import joblib
 import tensorflow as tf
 from fastapi.middleware.cors import CORSMiddleware
-import gdown
+import threading
 import os
 
-# === إعداد Google Drive ===
-file_id = '1Asnxs5veFwsLcAnmquHgFbRukfC5DGTD'
-url = f"https://drive.google.com/uc?id={file_id}"
-local_filename = "recipes_with_prices2.csv.gz"
+# === مسارات الملفات ===
+DATA_FILE = "recipes_with_prices21.csv.gz"
+SCALER_FILE = "scaler3.pkl"
+MODEL_FILE = "diet_model00.keras"
 
-# === Global variables ===
+# === متغيرات عامة ===
 model = None
-scaler = None
 recipes_df = None
+scaler = None
 encoded_recipes = None
 resources_loaded = False
 
-# === تحميل الموارد ===
-def load_resources():
-    global model, scaler, recipes_df, encoded_recipes, resources_loaded
-    try:
-        print("🚀 Starting resource loading...")
-        
-        # تحميل الملف لو مش موجود
-        if not os.path.exists(local_filename):
-            print("⬇️ Downloading dataset...")
-            gdown.download(url, local_filename, quiet=False)
+# === FastAPI app ===
+app = FastAPI()
 
-        # تحميل النموذج
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# === Event: Startup ===
+@app.on_event("startup")
+def startup_event():
+    def load_resources():
+        global model, recipes_df, scaler, encoded_recipes, resources_loaded
         print("📦 Loading model...")
-        model = tf.keras.models.load_model("diet_model00.keras", compile=False)
+        model = tf.keras.models.load_model(MODEL_FILE, compile=False)
 
-        # تحميل البيانات
         print("📄 Loading recipes data...")
-        selected_columns = [
-            'Calories', 'Keywords', 'Name', 'MealType', 'EstimatedPriceEGP',
-            'FatContent', 'SaturatedFatContent', 'CholesterolContent',
-            'SodiumContent', 'CarbohydrateContent', 'FiberContent',
-            'SugarContent', 'ProteinContent', 'RecipeIngredientQuantities', 'RecipeIngredientParts'
-        ]
-        recipes_df = pd.read_csv(local_filename, usecols=selected_columns, compression='gzip')
+        selected_columns = ['Calories', 'Keywords', 'Name', 'MealType', 'EstimatedPriceEGP',
+                            'FatContent', 'SaturatedFatContent', 'CholesterolContent',
+                            'SodiumContent', 'CarbohydrateContent', 'FiberContent', 'SugarContent',
+                            'ProteinContent', 'RecipeIngredientQuantities', 'RecipeIngredientParts']
+        recipes_df = pd.read_csv(DATA_FILE, usecols=selected_columns, compression='gzip')
 
-        # تحميل الـScaler
         print("⚙️ Loading scaler...")
-        scaler = joblib.load("scaler3.pkl")
+        scaler = joblib.load(SCALER_FILE)
 
-        # تجهيز البيانات
         nutrition_columns = [
             'Calories', 'FatContent', 'SaturatedFatContent', 'CholesterolContent',
             'SodiumContent', 'CarbohydrateContent', 'FiberContent', 'SugarContent', 'ProteinContent'
@@ -61,23 +60,10 @@ def load_resources():
 
         resources_loaded = True
         print("✅ Resources loaded successfully!")
-    except Exception as e:
-        print(f"❌ Error loading resources: {e}")
-        resources_loaded = False
 
-# === FastAPI app ===
-app = FastAPI()
+    threading.Thread(target=load_resources).start()
 
-# CORS Middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# === Request Model ===
+# === Request model ===
 class UserInput(BaseModel):
     gender: str
     weight: float
@@ -88,16 +74,16 @@ class UserInput(BaseModel):
     daily_budget: float
     dietary_restrictions: list[str]
 
-# === BMR and Calories Calculation ===
-def compute_bmr(gender, body_weight, body_height, age):
+# === BMR & Calories Calculation ===
+def compute_bmr(gender, weight, height, age):
     if gender == 'male':
-        return 10 * body_weight + 6.25 * body_height - 5 * age + 5
+        return 10 * weight + 6.25 * height - 5 * age + 5
     elif gender == 'female':
-        return 10 * body_weight + 6.25 * body_height - 5 * age - 161
+        return 10 * weight + 6.25 * height - 5 * age - 161
     else:
-        raise ValueError("Invalid gender. Please choose 'male' or 'female'.")
+        raise ValueError("Invalid gender: should be 'male' or 'female'.")
 
-def compute_daily_caloric_intake(bmr, activity_intensity, objective):
+def compute_daily_caloric_intake(bmr, activity_level, goal):
     intensity_multipliers = {
         'sedentary': 1.2,
         'lightly_active': 1.375,
@@ -110,18 +96,16 @@ def compute_daily_caloric_intake(bmr, activity_intensity, objective):
         'muscle_gain': 1.2,
         'health_maintenance': 1
     }
+    if activity_level not in intensity_multipliers:
+        raise ValueError(f"Invalid activity_level: {activity_level}")
+    if goal not in objective_adjustments:
+        raise ValueError(f"Invalid goal: {goal}")
 
-    if activity_intensity not in intensity_multipliers:
-        raise ValueError(f"Invalid activity_level: {activity_intensity}")
-    if objective not in objective_adjustments:
-        raise ValueError(f"Invalid goal: {objective}")
-
-    maintenance_calories = bmr * intensity_multipliers[activity_intensity]
-    total_caloric_intake = maintenance_calories * objective_adjustments[objective]
-
+    maintenance_calories = bmr * intensity_multipliers[activity_level]
+    total_caloric_intake = maintenance_calories * objective_adjustments[goal]
     return round(total_caloric_intake)
 
-# === Suggest Recipes Functions ===
+# === Recipe Suggestion ===
 def suggest_recipes(total_calories, meal_type, daily_budget, dietary_restrictions, top_n=5):
     meal_split = {
         'breakfast': (0.20, 0.20),
@@ -149,9 +133,21 @@ def suggest_recipes(total_calories, meal_type, daily_budget, dietary_restriction
         (similar_recipes['Calories'] <= target_calories)
     ]
 
+    similar_recipes = similar_recipes.sort_values(by=['EstimatedPriceEGP', 'Calories'], ascending=[False, False])
+
     if dietary_restrictions:
         pattern = '|'.join([r.lower() for r in dietary_restrictions])
-        similar_recipes = similar_recipes[~similar_recipes['Name'].str.lower().str.contains(pattern, na=False)]
+        similar_recipes = similar_recipes[
+            ~similar_recipes['Name'].str.lower().str.contains(pattern, na=False)
+        ]
+        if 'RecipeIngredientParts' in similar_recipes.columns:
+            similar_recipes = similar_recipes[
+                ~similar_recipes['RecipeIngredientParts'].str.lower().str.contains(pattern, na=False)
+            ]
+        if 'Keywords' in similar_recipes.columns:
+            similar_recipes = similar_recipes[
+                ~similar_recipes['Keywords'].str.lower().str.contains(pattern, na=False)
+            ]
 
     if similar_recipes.empty:
         fallback = recipes_df.copy()
@@ -162,7 +158,15 @@ def suggest_recipes(total_calories, meal_type, daily_budget, dietary_restriction
         if dietary_restrictions:
             pattern = '|'.join([r.lower() for r in dietary_restrictions])
             fallback = fallback[~fallback['Name'].str.lower().str.contains(pattern, na=False)]
-
+            if 'RecipeIngredientParts' in fallback.columns:
+                fallback = fallback[
+                    ~fallback['RecipeIngredientParts'].astype(str).str.lower().str.contains(pattern, na=False)
+                ]
+            if 'Keywords' in fallback.columns:
+                fallback = fallback[
+                    ~fallback['Keywords'].astype(str).str.lower().str.contains(pattern, na=False)
+                ]
+        
         return fallback.sort_values(by='CalorieDiff').head(top_n)[['Name', 'MealType', 'Calories', 'EstimatedPriceEGP', 'RecipeIngredientParts','RecipeIngredientQuantities']]
 
     return similar_recipes[['Name', 'MealType', 'Calories', 'EstimatedPriceEGP', 'RecipeIngredientParts','RecipeIngredientQuantities']].head(top_n)
@@ -189,21 +193,14 @@ def suggest_full_day_meal_plan(total_calories, daily_budget, dietary_restriction
                 'Calories': None,
                 'EstimatedPriceEGP': None,
                 'RecipeIngredientParts': None,
-                'RecipeIngredientQuantities': None
+                'RecipeIngredientQuantities':None
             }])
     
     return plan
 
-# === API Endpoints ===
-@app.on_event("startup")
-async def startup_event():
-    load_resources()
-
+# === FastAPI Route ===
 @app.post("/personalized_recommend")
 def personalized_recommendation(user: UserInput):
-    if not resources_loaded:
-        raise HTTPException(status_code=503, detail="Resources are still loading, please try again later.")
-    
     bmr = compute_bmr(user.gender, user.weight, user.height, user.age)
     target_calories = compute_daily_caloric_intake(bmr, user.activity_level, user.goal)
     per_meal_calories = target_calories / 5
@@ -221,3 +218,8 @@ def personalized_recommendation(user: UserInput):
             meal: df.to_dict(orient='records') for meal, df in suggestions.items()
         }
     }
+
+@app.get("/")
+def read_root():
+    return {"message": "Service is running 🚀"}
+
