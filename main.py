@@ -33,13 +33,20 @@ app.add_middleware(
 )
 
 @app.on_event("startup")
-def load_resources():
+def startup_event():
     global model, recipes_df, scaler, encoded_recipes, resources_loaded
+
+    print("🚀 Starting resource loading...")
+
     try:
         print("📦 Loading model...")
+        if not os.path.exists(MODEL_FILE):
+            raise FileNotFoundError(f"Model file '{MODEL_FILE}' not found.")
         model = tf.keras.models.load_model(MODEL_FILE, compile=False)
 
         print("📄 Loading recipes data...")
+        if not os.path.exists(DATA_FILE):
+            raise FileNotFoundError(f"Data file '{DATA_FILE}' not found.")
         selected_columns = ['Calories', 'Keywords', 'Name', 'MealType', 'EstimatedPriceEGP',
                             'FatContent', 'SaturatedFatContent', 'CholesterolContent',
                             'SodiumContent', 'CarbohydrateContent', 'FiberContent', 'SugarContent',
@@ -47,21 +54,31 @@ def load_resources():
         recipes_df = pd.read_csv(DATA_FILE, usecols=selected_columns, compression='gzip')
 
         print("⚙️ Loading scaler...")
+        if not os.path.exists(SCALER_FILE):
+            raise FileNotFoundError(f"Scaler file '{SCALER_FILE}' not found.")
         scaler = joblib.load(SCALER_FILE)
 
-        nutrition_columns = [
-            'Calories', 'FatContent', 'SaturatedFatContent', 'CholesterolContent',
-            'SodiumContent', 'CarbohydrateContent', 'FiberContent', 'SugarContent', 'ProteinContent'
-        ]
-        scaled_data = scaler.transform(recipes_df[nutrition_columns])
-        encoded_recipes = model.predict(scaled_data)
+        if os.path.exists('encoded_recipes.npy'):
+            print("📥 Loading encoded recipes from file...")
+            encoded_recipes = np.load('encoded_recipes.npy')
+        else:
+            print("🔢 Encoding recipes (first time)...")
+            nutrition_columns = [
+                'Calories', 'FatContent', 'SaturatedFatContent', 'CholesterolContent',
+                'SodiumContent', 'CarbohydrateContent', 'FiberContent', 'SugarContent', 'ProteinContent'
+            ]
+            scaled_data = scaler.transform(recipes_df[nutrition_columns])
+            encoded_recipes = model.predict(scaled_data)
+            np.save('encoded_recipes.npy', encoded_recipes)
 
         resources_loaded = True
         print("✅ Resources loaded successfully!")
-    
+
     except Exception as e:
-        print(f"❌ Error loading resources: {e}")
+        print(f"❌ Error during startup: {e}")
         resources_loaded = False
+
+
 
 # === Request Model ===
 class UserInput(BaseModel):
