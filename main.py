@@ -10,33 +10,42 @@ from tensorflow.keras.losses import MeanSquaredError
 from fastapi.middleware.cors import CORSMiddleware
 import gdown
 import os
+import threading
 
 # === إعداد Google Drive ===
 file_id = '1Asnxs5veFwsLcAnmquHgFbRukfC5DGTD'  # ضع هنا ID الخاص بملفك
 url = f"https://drive.google.com/uc?id={file_id}"
 local_filename = "recipes_with_prices2.csv.gz"
 
-# تحميل الملف لو مش موجود
-if not os.path.exists(local_filename):
-    gdown.download(url, local_filename, quiet=False)
+# تحميل البيانات والنموذج في البداية بشكل غير متزامن
+def load_resources():
+    # تحميل الملف لو مش موجود
+    if not os.path.exists(local_filename):
+        gdown.download(url, local_filename, quiet=False)
 
-# === Load model and data ===
-model = tf.keras.models.load_model(
-    "diet_model00.keras",
-    compile=False
-)
-selected_columns = ['Calories','Keywords','Name','MealType','EstimatedPriceEGP','FatContent', 'SaturatedFatContent', 'CholesterolContent',
-    'SodiumContent', 'CarbohydrateContent', 'FiberContent', 'SugarContent', 'ProteinContent','RecipeIngredientQuantities','RecipeIngredientParts']
-recipes_df = pd.read_csv(local_filename,usecols=selected_columns,compression='gzip')
+    global model, recipes_df, scaler, encoded_recipes
 
-nutrition_columns = [
-    'Calories', 'FatContent', 'SaturatedFatContent', 'CholesterolContent',
-    'SodiumContent', 'CarbohydrateContent', 'FiberContent', 'SugarContent', 'ProteinContent'
-]
+    # تحميل النموذج
+    model = tf.keras.models.load_model("diet_model00.keras", compile=False)
 
-scaler = joblib.load("scaler3.pkl")  # تحميل الـScaler المستخدم بالتدريب
-scaled_data = scaler.transform(recipes_df[nutrition_columns])
-encoded_recipes = model.predict(scaled_data)
+    # تحميل البيانات
+    selected_columns = ['Calories', 'Keywords', 'Name', 'MealType', 'EstimatedPriceEGP', 'FatContent', 'SaturatedFatContent', 'CholesterolContent',
+                        'SodiumContent', 'CarbohydrateContent', 'FiberContent', 'SugarContent', 'ProteinContent', 'RecipeIngredientQuantities', 'RecipeIngredientParts']
+    recipes_df = pd.read_csv(local_filename, usecols=selected_columns, compression='gzip')
+
+    nutrition_columns = [
+        'Calories', 'FatContent', 'SaturatedFatContent', 'CholesterolContent',
+        'SodiumContent', 'CarbohydrateContent', 'FiberContent', 'SugarContent', 'ProteinContent'
+    ]
+    
+    # تحميل الـScaler
+    scaler = joblib.load("scaler3.pkl")
+    scaled_data = scaler.transform(recipes_df[nutrition_columns])
+    encoded_recipes = model.predict(scaled_data)
+
+# استخدام threading لتحميل البيانات والنموذج في الخلفية
+loading_thread = threading.Thread(target=load_resources)
+loading_thread.start()
 
 # === FastAPI app ===
 app = FastAPI()
@@ -126,17 +135,7 @@ def suggest_recipes(total_calories, meal_type, daily_budget, dietary_restriction
 
     if dietary_restrictions:
         pattern = '|'.join([r.lower() for r in dietary_restrictions])
-        similar_recipes = similar_recipes[
-            ~similar_recipes['Name'].str.lower().str.contains(pattern, na=False)
-        ]
-        if 'RecipeIngredientParts' in similar_recipes.columns:
-            similar_recipes = similar_recipes[
-                ~similar_recipes['RecipeIngredientParts'].str.lower().str.contains(pattern, na=False)
-            ]
-        if 'Keywords' in similar_recipes.columns:
-            similar_recipes = similar_recipes[
-                ~similar_recipes['Keywords'].str.lower().str.contains(pattern, na=False)
-            ]
+        similar_recipes = similar_recipes[~similar_recipes['Name'].str.lower().str.contains(pattern, na=False)]
 
     if similar_recipes.empty:
         fallback = recipes_df.copy()
@@ -147,14 +146,6 @@ def suggest_recipes(total_calories, meal_type, daily_budget, dietary_restriction
         if dietary_restrictions:
             pattern = '|'.join([r.lower() for r in dietary_restrictions])
             fallback = fallback[~fallback['Name'].str.lower().str.contains(pattern, na=False)]
-            if 'RecipeIngredientParts' in fallback.columns:
-                fallback = fallback[
-                    ~fallback['RecipeIngredientParts'].astype(str).str.lower().str.contains(pattern, na=False)
-                ]
-            if 'Keywords' in fallback.columns:
-                fallback = fallback[
-                    ~fallback['Keywords'].astype(str).str.lower().str.contains(pattern, na=False)
-                ]
         
         return fallback.sort_values(by='CalorieDiff').head(top_n)[['Name', 'MealType', 'Calories', 'EstimatedPriceEGP', 'RecipeIngredientParts','RecipeIngredientQuantities']]
 
@@ -207,3 +198,4 @@ def personalized_recommendation(user: UserInput):
             meal: df.to_dict(orient='records') for meal, df in suggestions.items()
         }
     }
+
